@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Campo 3D · Simulador de electromagnetismo</title>
+<style>
+:root{color-scheme:dark;--bg:#321e28;--panel:#432a35;--line:#76535f;--ink:#fff4f5;--muted:#e5c8d0;--accent:#77f6e0}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px system-ui,sans-serif}header,main{max-width:1480px;margin:auto;padding:22px clamp(14px,4vw,56px)}header{padding-bottom:0}.brand{color:var(--accent);font-weight:800;letter-spacing:.17em;font-size:.8rem}h1{font-size:clamp(1.7rem,4vw,3.1rem);margin:6px 0 17px;letter-spacing:-.04em}h2,h3{margin:0 0 12px}h2{font-size:1.24rem}h3{font-size:1rem}nav,.row,.tools{display:flex;flex-wrap:wrap;gap:8px}button,select,input[type=number]{font:inherit;border:1px solid var(--line);color:var(--ink);background:#563843;border-radius:8px;padding:8px 10px}button{cursor:pointer}button:hover{border-color:var(--accent)}button[aria-pressed=true],.primary{background:var(--accent);color:#102923;font-weight:700;border-color:var(--accent)}button:disabled{opacity:.45;cursor:default}main{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,355px);gap:18px;align-items:start}.view,.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden}.viewhead,.panel{padding:18px}.viewhead{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.viewhead h2{margin:0}.stage{position:relative;background:radial-gradient(ellipse at 50% 40%,#70424e,#3d242f 76%)}canvas{display:block;width:100%;height:clamp(390px,59vh,700px);touch-action:none;outline-offset:-4px}.hint{color:var(--muted);font-size:.875rem;padding:12px 17px;margin:0}.panel label{display:block;font-size:.88rem;color:var(--muted)}.fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:9px 0 13px}.fields input,.fields select{width:100%;margin-top:4px}.block{border-top:1px solid var(--line);margin-top:15px;padding-top:15px}.value{font-variant-numeric:tabular-nums;color:var(--accent);line-height:1.5;overflow-wrap:anywhere}.check{display:inline-flex!important;gap:5px;align-items:center;margin:4px 8px 4px 0}select#configuration{width:100%;margin:5px 0 9px}.formula{color:var(--muted);line-height:1.55;font-size:.9rem}.legend{display:flex;gap:14px;flex-wrap:wrap;padding:12px 17px;border-top:1px solid var(--line);font-size:.88rem;color:var(--muted)}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}.wide{grid-template-columns:repeat(2,minmax(0,1fr))}@media(max-width:880px){main{grid-template-columns:1fr}canvas{height:440px}}@media(max-width:480px){canvas{height:345px}nav button{font-size:.85rem}.viewhead,.panel{padding:12px}}
+</style>
+<header><div class="brand">LABORATORIO VIRTUAL · FÍSICA II</div><h1>Electromagnetismo en 3D</h1><nav aria-label="Módulos" id="tabs"></nav></header>
+<main><section class="view"><div class="viewhead"><h2 id="title"></h2><div class="tools" id="tools"></div></div><div class="stage"><canvas id="scene" tabindex="0" aria-label="Visualización. Usa las flechas para girar, más y menos para acercar o alejar."></canvas></div><div id="legend" class="legend"></div><p class="hint" id="hint"></p></section><aside class="panel" id="controls"></aside></main>
+<script>
+"use strict";
+const K = 8.9875517923e9, MU4 = 1e-7, EPS = 8.8541878128e-12;
+const add = (a,b) => a.map((v,i)=>v+b[i]);
+const sub = (a,b) => a.map((v,i)=>v-b[i]);
+const mul = (a,s) => a.map(v=>v*s);
+const norm = a => Math.hypot(...a);
+const unit = a => mul(a,1/(norm(a)||1));
+const cross = ([x,y,z],[a,b,c]) => [y*c-z*b,z*a-x*c,x*b-y*a];
+const electric = (p, sources) => {
+  let e=[0,0,0], v=0;
+  for (const {p:q,q:n} of sources) {
+    if (!n) continue;
+    const d=sub(p,q), r=norm(d), factor=K*n*1e-9;
+    if (r<1e-8) return {e:[NaN,NaN,NaN],v:NaN};
+    e=add(e,mul(d,factor/r**3));
+    v+=factor/r;
+  }
+  return {e,v};
+};
+function magnetic(p,kind,strength){
+  const [x,y,z]=p;
+  if(kind==="wire"){
+    const r2=x*x+z*z;
+    return r2<1e-12?[NaN,NaN,NaN]:mul([z,0,-x],2*MU4*strength/r2);
+  }
+  if(kind==="crossed") return [0,0,strength];
+  const r=norm(p);
+  if(r<1e-8)return [NaN,NaN,NaN];
+  return mul(sub(mul(p,3*y/r**2),[0,1,0]),MU4*strength/r**3);
+}
+function capacitor(area,gap,er,voltage){
+  const c=EPS*er*area/gap;
+  return {c,q:c*voltage,u:c*voltage**2/2};
+}
+function circuit(kind,r,v){
+  const parallel=(a,b)=>1/(1/a+1/b);
+  const req=kind==="series"?r[0]+r[1]+r[2]:kind==="parallel"?1/r.reduce((s,x)=>s+1/x,0):r[0]+parallel(r[1],r[2]);
+  const i=v/req;
+  const volts=kind==="series"?r.map(x=>i*x):kind==="parallel"?r.map(()=>v):[i*r[0],v-i*r[0],v-i*r[0]];
+  return {req,i,p:v*i,branches:r.map((x,j)=>({v:volts[j],i:volts[j]/x,p:volts[j]**2/x}))};
+}
+function rc(r, c, v, t){
+  const tau = r*c, remaining = Math.exp(-t/tau);
+  return {tau, i:v*remaining/r, vc:-v*Math.expm1(-t/tau)};
+}
+function boris(p,v,e,b,qm,dt){
+  const half=mul(e,qm*dt/2), t=mul(b,qm*dt/2);
+  const minus=add(v,half), prime=add(minus,cross(minus,t));
+  const next=add(add(minus,cross(prime,mul(t,2/(1+norm(t)**2)))),half);
+  return {p:add(p,mul(next,dt)),v:next};
+}
+const modes=["Campo eléctrico","Capacitores","Circuitos","Campo magnético"];
+const titles=["Cargas puntuales y potencial","Capacitor de placas paralelas","Red de resistencias CC","Magnetismo y fuerza de Lorentz"];
+const colors={cyan:"#77f6e0",blue:"#86c5ff",red:"#ffa2aa",gold:"#ffdb89",purple:"#dac0ff"};
+const $=s=>document.querySelector(s);
+let mode=0, charges=[], selected=0, camera, traces=[], surfaces=[], particle, running=false;
+let electricMode="dipole", magneticMode="magnet", topology="series";
+const probe=[0,1,0], launch=[0,1,0], velocity=[1.8,0,0];
+const state={iso:18,strength:12,bz:2,ex:4,qm:0.35,area:.04,gap:.004,er:1,voltage:12,r1:100,r2:220,r3:330,rcC:100,rcT:1};
+const flags={field:true,iso:true,vectors:false,flat:false};
+const canvas=$("#scene"), ctx=canvas.getContext("2d");
+let width=1,height=1, lastTime=0, accumulator=0, pendingRender=false;
+const defaultCamera=()=>({yaw:.52,pitch:.36,zoom:1});
+camera=defaultCamera();
+function preset(name){
+  electricMode=name;
+  charges=name==="single"?[{p:[0,0,0],q:4}]:[{p:[-1.25,0,0],q:4},{p:[1.25,0,0],q:name==="pair"?4:-4}];
+  selected=0;
+}
+preset("dipole");
+const escNum=n=>Number.isFinite(n)?n.toLocaleString("es-PE",{maximumSignificantDigits:4}):"indefinido";
+const fieldAt=p=>mode===0?electric(p,charges).e:magnetic(p,magneticMode,magneticMode==="crossed"?state.bz:state.strength);
+const steps=(n,fn)=>Array.from({length:n},(_,i)=>fn(i));
+function direction(p){const f=fieldAt(p);if(mode===0&&flags.flat)f[2]=0;return f.every(Number.isFinite)?unit(f):[0,0,0]}
+function trace(seed,sign,limit){
+  const points=[seed];let p=seed;
+  for(let j=0;j<limit;j++){
+    const d=direction(p), h=.072*sign;
+    if(norm(d)<.5)break;
+    const next=add(p,mul(direction(add(p,mul(d,h/2))),h));
+    if(norm(next)>6.6||mode===0&&charges.some(c=>c.q&&norm(sub(c.p,next))<.14)||mode===3&&magneticMode==="magnet"&&norm(next)<.32)break;
+    points.push(next);p=next;
+  }
+  return points;
+}
+function buildTraces(){
+  if(mode===0&&flags.flat)return charges.filter(c=>c.q).flatMap(c=>steps(16,i=>{
+    const theta=i*Math.PI/8;
+    return {line:trace([c.p[0]+.22*Math.cos(theta),c.p[1]+.22*Math.sin(theta),0],Math.sign(c.q),140),reverse:c.q<0};
+  }));
+  if(mode===0)return charges.filter(c=>c.q).flatMap(c=>steps(Math.min(26,Math.max(6,Math.round(6+2*Math.abs(c.q)))),(i)=>{
+    const count=Math.min(26,Math.max(6,Math.round(6+2*Math.abs(c.q))));
+    const y=1-2*(i+.5)/count, r=Math.sqrt(1-y*y), phi=i*2.399963;
+    return trace(add(c.p,mul([r*Math.cos(phi),y,r*Math.sin(phi)],.22)),Math.sign(c.q),140);
+  }));
+  if(!(magneticMode==="crossed"?state.bz:state.strength))return [];
+  if(magneticMode==="wire")return [-2,-1,0,1,2].flatMap(y=>[.65,1.25,2.25,3.3].map(r=>steps(81,i=>{
+    const a=-Math.sign(state.strength)*i*Math.PI/40;return [r*Math.cos(a),y,r*Math.sin(a)];
+  })));
+  if(magneticMode==="crossed")return [-3,-1.5,0,1.5,3].flatMap(x=>[-2,0,2].map(y=>[[x,y,-4*Math.sign(state.bz)],[x,y,4*Math.sign(state.bz)]]));
+  return steps(12,i=>{
+    const a=i*Math.PI/6;return [.7,1.6,2.9,4].map(r=>{const p=[r*Math.cos(a),0,r*Math.sin(a)];return [...trace(p,-1,120).reverse().slice(0,-1),...trace(p,1,120)]});
+  }).flat();
+}
+function isosurface(level,flat){
+  if(!charges.some(c=>c.q))return [];
+  const n=26, min=-5, h=10/n, samples=[], polys=[];
+  const side=n+1, depth=flat?1:side;
+  for(let z=0;z<depth;z++)for(let y=0;y<side;y++)for(let x=0;x<side;x++){
+    const p=[min+x*h,min+y*h,flat?0:min+z*h];
+    let v=electric(p,charges).v;
+    if(!Number.isFinite(v))v=electric(add(p,[1e-5,0,0]),charges).v;
+    samples.push({p,v});
+  }
+  const cells=flat?[[0,1,3],[0,3,2]]:[[0,1,3,7],[0,3,2,7],[0,2,6,7],[0,6,4,7],[0,4,5,7],[0,5,1,7]];
+  for(let z=0;z<(flat?1:n);z++)for(let y=0;y<n;y++)for(let x=0;x<n;x++){
+    const base=x+y*side+z*side*side;
+    const cube=[0,1,side,side+1,side*side,side*side+1,side*side+side,side*side+side+1].map(o=>samples[base+o]);
+    for(const ids of cells){
+      const points=ids.map(i=>cube[i]), lo=points.filter(a=>a.v<level), hi=points.filter(a=>a.v>=level);
+      if(!lo.length||!hi.length)continue;
+      const mix=(a,b)=>add(a.p,mul(sub(b.p,a.p),(level-a.v)/(b.v-a.v)));
+      const polygon=lo.flatMap(a=>hi.map(b=>mix(a,b)));
+      if(polygon.length===4)[polygon[2],polygon[3]]=[polygon[3],polygon[2]];
+      polys.push(polygon);
+    }
+  }
+  return polys;
+}
+function updateGeometry(){
+  if(mode===0||mode===3){
+    traces=flags.field?buildTraces():[];
+    surfaces=mode===0&&flags.iso?isosurface(state.iso,flags.flat):[];
+  }
+  requestDraw();
+}
+function configure(){
+  $("#tabs").innerHTML=modes.map((m,i)=>'<button data-mode="'+i+'" aria-pressed="'+(mode===i)+'">'+m+'</button>').join("");
+  $("#title").textContent=mode===2&&topology==="rc"?"Carga de un circuito RC":titles[mode];
+  $("#tools").innerHTML=mode===2?"":'<button id="reset">Restablecer vista</button>'+(mode===0?'<button id="flat" aria-pressed="'+flags.flat+'">'+(flags.flat?"Cambiar a 3D":"Cambiar a 2D")+'</button>':"");
+  $("#hint").textContent=mode===2?"Edita los valores para actualizar el esquema y la gráfica.":mode===0&&flags.flat?"Corte Z = 0. El campo se proyecta sobre X–Y. Usa la rueda o +/− para acercar y alejar.":"Arrastra para girar · Rueda para acercar · Flechas y +/− con el visor enfocado";
+  const legend=mode===0?[["red","Carga positiva"],["blue","Carga negativa"],["cyan","Campo E"],["purple","Equipotencial"],["gold","Sonda / partícula"]]:mode===3?[["cyan","Campo B"],["gold","Partícula"]]:mode===1?[["red","Placa +"],["blue","Placa −"],["cyan","Campo E"]]:topology==="rc"?[["cyan","Voltaje del capacitor"],["gold","Tiempo seleccionado"]]:[["cyan","Curva V–I"],["gold","Punto de operación"]];
+  $("#legend").innerHTML=legend.map(([c,l])=>'<span><i class="dot" style="background:'+colors[c]+'"></i>'+l+'</span>').join("");
+  renderControls();updateGeometry();
+}
+function input(label,key,v,min,max,step=1){
+  return '<label>'+label+'<input type="number" data-key="'+key+'" value="'+v+'" min="'+min+'" max="'+max+'" step="'+step+'"></label>';
+}
+function vector(prefix,values,min,max,step=.1){
+  return ["X","Y","Z"].map((axis,i)=>input(axis,prefix+i,values[i],min,max,step)).join("");
+}
+function select(id,label,items,value){
+  return '<label>'+label+'<select id="'+id+'">'+items.map(([key,name])=>'<option value="'+key+'"'+(value===key?" selected":"")+'>'+name+'</option>').join("")+'</select></label>';
+}
+const toggle=(key,label)=>'<label class="check"><input type="checkbox" data-flag="'+key+'" '+(flags[key]?"checked":"")+'>'+label+'</label>';
+function launchControls(){
+  return '<div class="block"><h3>Partícula de prueba</h3><div class="formula">Posición inicial (m)</div><div class="fields">'+vector("launch",launch,-5,5)+'</div><div class="formula">Velocidad inicial (m/s)</div><div class="fields">'+vector("velocity",velocity,-15,15)+'</div><div class="fields wide">'+input("q/m (C/kg)","qm",state.qm,-5,5,.05)+(mode===3&&magneticMode==="crossed"?input("Eₓ (V/m)","ex",state.ex,-30,30,.5):"")+'</div><div class="row"><button class="primary" id="launch">Lanzar</button><button id="pause" disabled>Pausar</button><button id="clear">Limpiar</button></div><p class="value" id="motion" aria-live="off"></p></div>';
+}
+function renderControls(){
+  let html;
+  if(mode===0){
+    const c=charges[selected];
+    html='<h2>Distribución de carga</h2>'+select("configuration","Configuración",[["dipole","Dipolo (+/−)"],["single","Carga aislada"],["pair","Dos cargas positivas"],["custom","Personalizada"]],electricMode)+
+      '<div class="row"><button id="add" '+(charges.length===10?"disabled":"")+'>Añadir carga</button><button id="remove" '+(!c?"disabled":"")+'>Eliminar</button><span class="hint">'+charges.length+' / 10</span></div>'+
+      (c?select("which","Carga activa",charges.map((_,i)=>[String(i),"Carga "+(i+1)]),String(selected))+'<div class="fields">'+vector("charge",c.p,-4,4)+'</div><div class="fields wide">'+input("Carga (nC)","chargeQ",c.q,-20,20,.5)+'</div>':"")+
+      '<div class="block"><h3>Campo y equipotencial</h3>'+toggle("field","Líneas")+toggle("vectors","Vectores")+toggle("iso","Equipotencial")+'<div class="fields wide">'+input("Nivel V (voltios)","iso",state.iso,-200,200,1)+'</div></div>'+
+      '<div class="block"><h3>Sonda de potencial (m)</h3><div class="fields">'+vector("probe",probe,-6,6)+'</div><output id="readout" class="value"></output></div>'+launchControls();
+  }else if(mode===3){
+    html='<h2>Fuente magnética</h2>'+select("configuration","Modelo",[["magnet","Imán dipolar"],["wire","Hilo recto infinito"],["crossed","Campos uniformes cruzados"]],magneticMode)+
+      '<div class="fields wide">'+(magneticMode==="crossed"?input("Bᶻ (T)","bz",state.bz,-10,10,.1):input(magneticMode==="wire"?"Corriente (A)":"Momento (A·m²)","strength",state.strength,-100,100,1))+'</div>'+toggle("field","Líneas")+toggle("vectors","Vectores")+
+      '<p class="formula">'+(magneticMode==="crossed"?"E apunta sobre X y B sobre Z. La trayectoria utiliza los valores introducidos en unidades SI.":"El campo invierte su sentido al cambiar el signo de la fuente. La trayectoria usa q/m efectivo de demostración ×10⁶.")+'</p>'+launchControls();
+  }else if(mode===1){
+    html='<h2>Parámetros de las placas</h2><div class="fields wide">'+input("Área (m²)","area",state.area,.001,1,.001)+input("Separación (m)","gap",state.gap,.001,.1,.001)+input("Permitividad relativa εᵣ","er",state.er,1,100,.1)+input("Voltaje (V)","voltage",state.voltage,-100,100,.5)+'</div><div class="block"><h3>Resultados</h3><output id="readout" class="value"></output><p class="formula">C = ε₀εᵣA/d<br>Q = CV<br>U = ½CV²<br>Campo uniforme ideal. La escena exagera la separación.</p></div>';
+  }else{
+    html='<h2>Fuente y resistencias</h2>'+select("configuration","Conexión",[["series","Serie"],["parallel","Paralelo"],["mixed","Mixto: R₁ + (R₂ ∥ R₃)"],["rc","RC: resistencia y capacitor en serie"]],topology)+'<div class="fields wide">'+input("Voltaje (V)","voltage",state.voltage,-100,100,.5)+(topology==="rc"?input("R (Ω)","r1",state.r1,1,10000)+input("C (μF)","rcC",state.rcC,1,10000)+input("Tiempo (unidades de τ)","rcT",state.rcT,0,5,.05):[1,2,3].map(i=>input("R"+i+" (Ω)","r"+i,state["r"+i],1,10000)).join(""))+'</div><div class="block"><h3>Resultados en tiempo real</h3><output id="readout" class="value"></output><p class="formula">'+(topology==="rc"?"τ = RC · V꜀(t) = V(1 − e^(−t/τ))<br>El capacitor empieza descargado.":"V = IR · P = VI<br>Componentes ideales en corriente continua.")+'</p></div>';
+  }
+  $("#controls").innerHTML=html;readout();motionText();
+}
+function currentCircuit(){return circuit(topology,[state.r1,state.r2,state.r3],state.voltage)}
+function readout(){
+  const out=$("#readout");
+  if(mode===0){const {v,e}=electric(probe,charges);out.textContent="V = "+escNum(v)+" V · |E| = "+escNum(norm(e))+" N/C";}
+  if(mode===1){const {c,q,u}=capacitor(state.area,state.gap,state.er,state.voltage);out.innerHTML="C = "+escNum(c*1e12)+" pF<br>Q = "+escNum(q*1e9)+" nC<br>U = "+escNum(u*1e9)+" nJ<br>E = "+escNum(state.voltage/state.gap)+" V/m";}
+  if(mode===2&&topology==="rc"){
+    const c=state.rcC*1e-6,t=state.rcT*state.r1*c,{tau,i,vc}=rc(state.r1,c,state.voltage,t);
+    out.innerHTML="τ = "+escNum(tau*1000)+" ms<br>t = "+escNum(t*1000)+" ms<br>V꜀ = "+escNum(vc)+" V<br>I = "+escNum(i*1000)+" mA<br>U꜀ = "+escNum(c*vc**2*5e5)+" μJ";
+  }
+  if(mode===2&&topology!=="rc"){const {req,i,p,branches}=currentCircuit();out.innerHTML="Rₑq = "+escNum(req)+" Ω<br>I = "+escNum(i*1000)+" mA<br>P = "+escNum(p*1000)+" mW"+branches.map((b,j)=>'<br>R'+(j+1)+' · '+escNum(b.v)+' V · '+escNum(b.i*1000)+' mA · '+escNum(b.p*1000)+' mW').join("");}
+}
+function clearParticle(){particle=null;running=false;accumulator=0;motionText();requestDraw()}
+function motionText(){
+  const m=$("#motion"), b=$("#pause");
+  if(!m)return;
+  b.disabled=!particle||Boolean(particle.stop);
+  b.textContent=running?"Pausar":"Continuar";
+  m.textContent=particle?(particle.stop||"t = "+particle.t.toFixed(2)+" s · |v| = "+escNum(norm(particle.v))+" m/s"):"";
+}
+document.addEventListener("click",event=>{
+  const b=event.target.closest("button");
+  if(!b)return;
+  if(b.dataset.mode!==undefined){mode=Number(b.dataset.mode);camera=defaultCamera();clearParticle();configure();return}
+  if(b.id==="reset"){camera=defaultCamera();requestDraw()}
+  if(b.id==="flat"){flags.flat=!flags.flat;configure()}
+  if(b.id==="add"&&charges.length<10){charges.push({p:[0,Math.min(4,charges.length*.38),0],q:2});selected=charges.length-1;electricMode="custom";renderControls();updateGeometry()}
+  if(b.id==="remove"&&charges.length){charges.splice(selected,1);selected=Math.max(0,Math.min(selected,charges.length-1));electricMode="custom";renderControls();updateGeometry()}
+  if(b.id==="launch"){particle={p:[...launch],v:[...velocity],path:[[...launch]],t:0,stop:""};accumulator=0;running=true;motionText();requestDraw()}
+  if(b.id==="pause"&&particle&&!particle.stop){running=!running;accumulator=0;motionText();requestDraw()}
+  if(b.id==="clear")clearParticle();
+});
+$("#controls").addEventListener("change",event=>{
+  const el=event.target;
+  if(el.id==="which"){selected=Number(el.value);renderControls();requestDraw();return}
+  if(el.id==="configuration"){
+    if(mode===0&&el.value!=="custom")preset(el.value);
+    if(mode===0)electricMode=el.value;
+    if(mode===3)magneticMode=el.value;
+    if(mode===2){topology=el.value;configure();return}
+    clearParticle();renderControls();updateGeometry();
+  }
+  if(el.dataset.key&&(el.value===""||!el.checkValidity()&&el.validity.rangeOverflow||el.validity.rangeUnderflow)){
+    el.value=el.value===""?el.defaultValue:Math.max(Number(el.min),Math.min(Number(el.max),Number(el.value)));
+    el.dispatchEvent(new Event("input",{bubbles:true}));
+  }
+});
+$("#controls").addEventListener("input",event=>{
+  const el=event.target,key=el.dataset.key;
+  if(el.dataset.flag){flags[el.dataset.flag]=el.checked;updateGeometry();return}
+  if(!key||el.value==="")return;
+  const value=Math.max(Number(el.min),Math.min(Number(el.max),el.valueAsNumber));
+  if(!Number.isFinite(value))return;
+  const i=Number(key.at(-1));
+  if(key==="chargeQ")charges[selected].q=value;
+  else if(key.startsWith("charge"))charges[selected].p[i]=value;
+  else if(key.startsWith("probe"))probe[i]=value;
+  else if(key.startsWith("launch"))launch[i]=value;
+  else if(key.startsWith("velocity"))velocity[i]=value;
+  else state[key]=value;
+  el.defaultValue=value;
+  if(key.startsWith("charge")){electricMode="custom";$("#configuration").value="custom";clearParticle()}
+  if(["strength","bz","ex","qm"].includes(key))clearParticle();
+  readout();
+  if(key.startsWith("charge")||["iso","strength","bz"].includes(key))updateGeometry();else requestDraw();
+});
+function project(p){
+  let [x,y,z]=p;
+  if(mode===0&&flags.flat)z=0;
+  else{
+    const c=Math.cos(camera.yaw),s=Math.sin(camera.yaw), a=Math.cos(camera.pitch),b=Math.sin(camera.pitch);
+    [x,z]=[x*c-z*s,x*s+z*c];
+    [y,z]=[y*a-z*b,y*b+z*a];
+  }
+  const scale=Math.min(width,height)*.088*camera.zoom, persp=clamp(1/(1+z*.047),.48,2.2);
+  return [width/2+x*scale*persp,height/2-y*scale*persp,z];
+}
+function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+function path(points,color,line=1,fill=false){
+  if(points.length<2)return;
+  ctx.beginPath();ctx.moveTo(points[0][0],points[0][1]);
+  for(const p of points.slice(1))ctx.lineTo(p[0],p[1]);
+  if(fill){ctx.closePath();ctx.fillStyle=color;ctx.fill()}
+  else{ctx.strokeStyle=color;ctx.lineWidth=line;ctx.stroke()}
+}
+function line3(a,b,c,w){path([project(a),project(b)],c,w)}
+function arrow(a,b,color){
+  const angle=Math.atan2(b[1]-a[1],b[0]-a[0]);
+  if(Math.hypot(b[0]-a[0],b[1]-a[1])<3)return;
+  path([a,b],color,1.7);
+  path([b,[b[0]-6*Math.cos(angle-.48),b[1]-6*Math.sin(angle-.48)],[b[0]-6*Math.cos(angle+.48),b[1]-6*Math.sin(angle+.48)],b],color,1,true);
+}
+function textAt(text,x,y,color="#c7d9ee",size=12){
+  ctx.font=size+"px system-ui";ctx.fillStyle=color;ctx.fillText(text,x,y);
+}
+function point(p,color,r,label=""){
+  const [x,y]=project(p), glow=ctx.createRadialGradient(x-2,y-3,1,x,y,r);
+  glow.addColorStop(0,"#ffffff");glow.addColorStop(.30,color);glow.addColorStop(1,color+"70");
+  ctx.beginPath();ctx.arc(x,y,r,0,2*Math.PI);ctx.fillStyle=glow;ctx.fill();
+  if(label)textAt(label,x+r+5,y+4,color,13);
+}
+function grid(){
+  const flat=mode===0&&flags.flat;
+  for(let i=-5;i<=5;i++){
+    line3([i,flat?-5:-2.8,flat?0:-5],[i,flat?5:-2.8,flat?0:5],"#986774");
+    line3([-5,flat?i:-2.8,flat?0:i],[5,flat?i:-2.8,flat?0:i],"#986774");
+  }
+  [[5.2,0,0],[0,5.2,0],...(flat?[]:[[0,0,5.2]])].forEach((p,i)=>{
+    const c=[colors.red,colors.cyan,colors.blue][i],end=project(p);
+    line3([0,0,0],p,c+"70");textAt("XYZ"[i],end[0]+4,end[1]-4,c);
+  });
+}
+function drawFields(){
+  grid();
+  if(mode===0&&surfaces.length){
+    const polys=surfaces.map(poly=>poly.map(project)).sort((a,b)=>b[0][2]-a[0][2]);
+    for(const poly of polys)path(poly,flags.flat?colors.purple:"#c19cf62b",1.6,!flags.flat);
+  }
+  for(const entry of traces){
+    if(mode===0&&flags.flat)drawTrace(entry.line,entry.reverse);
+    else drawTrace(entry,mode===0&&charges.find(c=>norm(sub(c.p,entry[0]))<.24)?.q<0);
+  }
+  if(flags.vectors)for(let x=-4;x<=4;x+=1.3)for(let y=-3.9;y<=4;y+=1.3)for(const z of mode===0&&flags.flat?[0]:[-2,0,2]){
+    const p=[x,y,z],f=fieldAt(p);
+    if(mode===0&&flags.flat)f[2]=0;
+    const magnitude=norm(f);
+    if(!Number.isFinite(magnitude)||magnitude<1e-15)continue;
+    const factor=mode===0||magneticMode==="crossed"?1:1e6;
+    arrow(project(p),project(add(p,mul(unit(f),.18+.52*Math.tanh(magnitude*factor)))),colors.cyan);
+  }
+  if(mode===0){
+    for(const c of [...charges].sort((a,b)=>project(b.p)[2]-project(a.p)[2])){
+      const p=flags.flat?[c.p[0],c.p[1],0]:c.p;
+      point(p,c.q>0?colors.red:c.q<0?colors.blue:"#bcc9d9",charges[selected]===c?12:9,(c.q>0?"+":"")+escNum(c.q)+" nC");
+    }
+    point(probe,colors.gold,5,flags.flat&&probe[2]!==0?"Sonda proyectada":"Sonda");
+  }else if(magneticMode==="magnet"){
+    line3([0,-.53,0],[0,0,0],colors.blue,17);line3([0,0,0],[0,.53,0],colors.red,17);
+    point([0,.53,0],colors.red,7,state.strength>=0?"N":"S");point([0,-.53,0],colors.blue,7,state.strength>=0?"S":"N");
+  }else if(magneticMode==="wire"){
+    if(state.strength<0)arrow(project([0,4,0]),project([0,-4,0]),colors.gold);
+    else if(state.strength>0)arrow(project([0,-4,0]),project([0,4,0]),colors.gold);
+    line3([0,-4,0],[0,4,0],colors.gold,3);
+  }else if(state.ex){
+    for(const y of [-2,0,2])arrow(project([-3*Math.sign(state.ex),y,0]),project([3*Math.sign(state.ex),y,0]),colors.purple);
+  }
+  if(particle){path(particle.path.map(project),colors.gold,3);point(particle.p,colors.gold,6)}
+}
+function drawTrace(line,reverse=false){
+  const points=line.map(project);
+  path(points,colors.cyan+"d4",1.8);
+  if(points.length===2)arrow(points[0],points[1],colors.cyan);
+  if(points.length>4){const i=Math.round((points.length-1)*.45), a=points[Math.max(0,i-2)], b=points[Math.min(points.length-1,i+2)];
+    arrow(reverse?b:a,reverse?a:b,colors.cyan);}
+}
+function drawCap(){
+  grid();
+  const s=clamp(Math.sqrt(state.area)*9,.45,3.5), d=clamp(.4+state.gap*22,.4,2.6);
+  const plates=[-d,d].map((x,j)=>({p:[[x,-s,-s],[x,s,-s],[x,s,s],[x,-s,s]].map(project),color:state.voltage===0?"#a8b9cf":(j===0)===(state.voltage>0)?colors.red:colors.blue}));
+  plates.sort((a,b)=>b.p[0][2]-a.p[0][2]);
+  function plate(a){path(a.p,a.color+"45",1,true);path([...a.p,a.p[0]],a.color,2)}
+  plate(plates[0]);
+  if(state.er>1){const y=s*.86;const slab=[[-d*.8,-y,-y],[d*.8,-y,-y],[d*.8,y,-y],[-d*.8,y,-y]].map(project);path(slab,colors.purple+"48",1,true)}
+  if(state.voltage)for(const y of [-.66,0,.66])for(const z of [-.66,0,.66]){
+    const sign=Math.sign(state.voltage);
+    arrow(project([-.92*d*sign,y*s,z*s]),project([.92*d*sign,y*s,z*s]),colors.cyan);
+  }
+  plate(plates[1]);
+  textAt("Dieléctrico  εᵣ = "+escNum(state.er),18,28,colors.purple,14);
+}
+function drawCircuit(){
+  const compact=width<720, cw=compact?width:width*.53,ch=compact?height*.55:height;
+  const sx=cw/450, sy=ch/360;
+  const X=x=>x*sx,Y=y=>y*sy;
+  const line=(a,b,c="#d4aab6",w=2)=>path([[X(a[0]),Y(a[1])],[X(b[0]),Y(b[1])]],c,w);
+  const res=(x,y,w,j)=>{
+    line([x,y],[x+8,y]);line([x+w-8,y],[x+w,y]);
+    ctx.fillStyle="#653c49";ctx.strokeStyle=colors.cyan;ctx.lineWidth=1.5;
+    ctx.fillRect(X(x+8),Y(y-10),X(w-16),Y(20));ctx.strokeRect(X(x+8),Y(y-10),X(w-16),Y(20));
+    textAt("R"+j,X(x+w/2)-8,Y(y-17),colors.cyan,13);
+  };
+  const left=55,right=392,top=100,bottom=272;
+  line([left,top],[left,175]);line([left,197],[left,bottom]);line([left,bottom],[right,bottom]);line([right,top],[right,bottom]);
+  line([38,175],[72,175],colors.gold,3);line([44,197],[66,197],colors.gold,3);
+  textAt(escNum(state.voltage)+" V",X(75),Y(194),colors.gold,14);
+  if(topology==="rc"){
+    line([left,top],[96,top]);res(96,top,104,1);line([200,top],[272,top]);line([284,top],[right,top]);
+    line([272,82],[272,118],colors.purple,3);line([284,82],[284,118],colors.purple,3);
+    textAt("C",X(274),Y(76),colors.purple,14);
+  }else if(topology==="series"){
+    line([left,top],[90,top]);res(90,top,85,1);line([175,top],[185,top]);res(185,top,85,2);line([270,top],[280,top]);res(280,top,85,3);line([365,top],[right,top]);
+  }else{
+    const branch=topology==="mixed"?205:120;
+    if(topology==="mixed"){line([left,top],[85,top]);res(85,top,105,1);line([190,top],[branch,top]);}
+    else line([left,top],[branch,top]);
+    line([branch,top],[branch,topology==="mixed"?215:230]);
+    const levels=topology==="mixed"?[100,215]:[100,165,230];
+    levels.forEach((y,i)=>{line([branch,y],[branch+12,y]);res(branch+12,y,right-branch-24,i+(topology==="mixed"?2:1));line([right-12,y],[right,y]);});
+  }
+  const ax=compact?38:cw+40, ay=compact?height*.65:height*.25;
+  const aw=width-ax-30, ah=compact?height*.24:height*.48;
+  if(topology==="rc"){
+    const y=v=>ay+ah/2-v/Math.max(1,Math.abs(state.voltage))*ah*.43;
+    const curve=t=>rc(state.r1,state.rcC*1e-6,state.voltage,t*state.r1*state.rcC*1e-6).vc;
+    textAt("Carga del capacitor · V꜀ (V)",ax,ay-14,colors.cyan,13);
+    ctx.strokeStyle="#b78790";ctx.strokeRect(ax,ay,aw,ah);
+    path([[ax,y(0)],[ax+aw,y(0)]],"#b78790");
+    path(steps(61,i=>[ax+aw*i/60,y(curve(i/12))]),colors.cyan,2);
+    const px=ax+aw*state.rcT/5,py=y(curve(state.rcT));
+    ctx.beginPath();ctx.arc(px,py,5,0,Math.PI*2);ctx.fillStyle=colors.gold;ctx.fill();
+    textAt("0",ax,ay+ah+16);textAt("5 τ",ax+aw-21,ay+ah+16);
+    textAt(escNum(state.voltage)+" V",ax+6,y(state.voltage)+(state.voltage>=0?11:-4));
+    return;
+  }
+  const {req}=currentCircuit(), vmax=Math.max(12,Math.abs(state.voltage))*1.2;
+  const tx=v=>ax+aw*(v/vmax+1)/2, ty=v=>ay+ah*(1-v/vmax)/2;
+  textAt("Ley de Ohm · I (mA) / V (V)",ax,ay-14,colors.cyan,13);
+  ctx.strokeStyle="#b78790";ctx.strokeRect(ax,ay,aw,ah);
+  path([[ax,ty(0)],[ax+aw,ty(0)]],"#b78790");
+  path([[tx(0),ay],[tx(0),ay+ah]],"#b78790");
+  path([[ax,ay+ah],[ax+aw,ay]],colors.cyan,2);
+  ctx.beginPath();ctx.arc(tx(state.voltage),ty(state.voltage),5,0,Math.PI*2);ctx.fillStyle=colors.gold;ctx.fill();
+  textAt("−"+escNum(vmax),ax,ay+ah+16);
+  textAt(escNum(vmax)+" V",ax+aw-43,ay+ah+16);
+  textAt(escNum(vmax/req*1000),ax+4,ay+13);
+  textAt("−"+escNum(vmax/req*1000),ax+4,ay+ah-5);
+}
+function advance(dt){
+  const p=particle;
+  const e=mode===0?electric(p.p,charges).e:magneticMode==="crossed"?[state.ex,0,0]:[0,0,0];
+  const b=mode===0?[0,0,0]:fieldAt(p.p);
+  if(![...e,...b].every(Number.isFinite)||mode===0&&charges.some(c=>c.q&&norm(sub(c.p,p.p))<.15)||mode===3&&magneticMode==="magnet"&&norm(p.p)<.35||mode===3&&magneticMode==="wire"&&Math.hypot(p.p[0],p.p[2])<.1){
+    p.stop="Partícula cerca de una fuente idealizada.";running=false;return;
+  }
+  const qm=mode===3&&magneticMode!=="crossed"?state.qm*1e6:state.qm;
+  Object.assign(p,boris(p.p,p.v,e,b,qm,dt));
+  p.t+=dt;
+  if(p.t>12||norm(p.p)>7){p.stop=p.t>12?"Tiempo máximo de simulación.":"La partícula salió del visor.";running=false}
+  p.path.push(p.p);
+}
+function draw(time){
+  pendingRender=false;
+  if(running){
+    accumulator+=lastTime?Math.min(.05,(time-lastTime)/1000):0;
+    while(accumulator>=.004&&running){advance(.004);accumulator-=.004;}
+    motionText();
+  }
+  lastTime=running?time:0;
+  ctx.clearRect(0,0,width,height);
+  if(mode===2)drawCircuit();else if(mode===1)drawCap();else drawFields();
+  if(running)requestDraw();
+}
+function requestDraw(){if(!pendingRender){pendingRender=true;requestAnimationFrame(draw)}}
+new ResizeObserver(()=>{
+  const rect=canvas.getBoundingClientRect(), dpr=Math.min(devicePixelRatio||1,2);
+  width=rect.width;height=rect.height;
+  canvas.width=Math.round(width*dpr);canvas.height=Math.round(height*dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);requestDraw();
+}).observe(canvas);
+let drag=null;
+canvas.addEventListener("pointerdown",e=>{
+  if(mode===2)return;drag=[e.clientX,e.clientY];canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener("pointermove",e=>{
+  if(!drag)return;
+  camera.yaw+=(e.clientX-drag[0])*.009;camera.pitch=clamp(camera.pitch+(e.clientY-drag[1])*.009,-1.5,1.5);
+  drag=[e.clientX,e.clientY];requestDraw();
+});
+for(const ev of ["pointerup","pointercancel","lostpointercapture"])canvas.addEventListener(ev,()=>drag=null);
+function zoom(f){camera.zoom=clamp(camera.zoom*f,.46,2.8);requestDraw()}
+canvas.addEventListener("wheel",e=>{if(mode!==2){e.preventDefault();zoom(Math.exp(-e.deltaY*.001))}},{passive:false});
+canvas.addEventListener("keydown",e=>{
+  const key=e.key;if(mode===2||!["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","+","=","-"].includes(key))return;
+  e.preventDefault();
+  if(key==="ArrowLeft")camera.yaw-=.12;
+  if(key==="ArrowRight")camera.yaw+=.12;
+  if(key==="ArrowUp")camera.pitch=clamp(camera.pitch-.12,-1.5,1.5);
+  if(key==="ArrowDown")camera.pitch=clamp(camera.pitch+.12,-1.5,1.5);
+  if(key==="+"||key==="=")zoom(1.1);
+  if(key==="-")zoom(1/1.1);
+  requestDraw();
+});
+configure();
+</script></html>
+
+
+
+
